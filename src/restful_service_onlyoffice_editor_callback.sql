@@ -34,12 +34,12 @@ wwv_flow_api.create_restful_module(
 ,p_parsing_schema=>'ONLYOFFICE'
 ,p_items_per_page=>25
 ,p_status=>'PUBLISHED'
-,p_row_version_number=>13
+,p_row_version_number=>17
 );
 wwv_flow_api.create_restful_template(
  p_id=>wwv_flow_api.id(18601183359148068)
 ,p_module_id=>wwv_flow_api.id(18601071144148066)
-,p_uri_template=>'editorCallback/{apexsession}'
+,p_uri_template=>'editorCallback/'
 ,p_priority=>0
 ,p_etag_type=>'HASH'
 );
@@ -52,11 +52,7 @@ wwv_flow_api.create_restful_handler(
 ,p_require_https=>'YES'
 ,p_source=>wwv_flow_string.join(wwv_flow_t_varchar2(
 'BEGIN',
-'  onlyoffice_pkg.onlyoffice_editor_callback(p_app_id      => 170,',
-'                                            p_app_session => :apexsession,',
-'                                            p_body        => :body,',
-'                                            p_wallet_path => NULL,',
-'                                            p_wallet_pwd  => NULL);',
+'  onlyoffice_pkg.onlyoffice_editor_callback(p_body => :body);',
 'END;'))
 );
 end;

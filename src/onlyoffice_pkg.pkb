@@ -51,7 +51,14 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
                                    p_editor_height IN VARCHAR2,
                                    p_file_author   IN VARCHAR2,
                                    p_file_url      IN VARCHAR2,
-                                   p_callback_url  IN VARCHAR2) IS
+                                   p_callback_url  IN VARCHAR2,
+                                   p_folder_name   IN VARCHAR2,
+                                   p_header_link   IN VARCHAR2,
+                                   p_about_name    IN VARCHAR2,
+                                   p_about_mail    IN VARCHAR2,
+                                   p_about_url     IN VARCHAR2,
+                                   p_about_address IN VARCHAR2,
+                                   p_about_info    IN VARCHAR2) IS
     --
     CURSOR l_cur_files IS
       SELECT files_iv.id,
@@ -104,8 +111,29 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
         FROM apex_applications aa
        WHERE aa.application_id = v('APP_ID');
     --
-    l_rec_files l_cur_files%ROWTYPE;
-    l_rec_app   l_cur_app%ROWTYPE;
+    CURSOR l_cur_header_logo IS
+      SELECT aaf.mime_type,
+             aaf.blob_content
+        FROM apex_application_files aaf
+       WHERE aaf.filename = 'header_logo.png'
+         AND aaf.flow_id = nvl(wwv_flow.g_flow_id,
+                               v('APP_ID'));
+    --
+    CURSOR l_cur_about_logo IS
+      SELECT aaf.mime_type,
+             aaf.blob_content
+        FROM apex_application_files aaf
+       WHERE aaf.filename = 'about_logo.png'
+         AND aaf.flow_id = nvl(wwv_flow.g_flow_id,
+                               v('APP_ID'));
+    --
+    l_rec_files       l_cur_files%ROWTYPE;
+    l_rec_app         l_cur_app%ROWTYPE;
+    l_rec_header_logo l_cur_header_logo%ROWTYPE;
+    l_rec_about_logo  l_cur_about_logo%ROWTYPE;
+    --
+    l_header_logo_data_url CLOB := empty_clob();
+    l_about_logo_data_url  CLOB := empty_clob();
     --
   BEGIN
     --
@@ -118,6 +146,27 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
     FETCH l_cur_app
       INTO l_rec_app;
     CLOSE l_cur_app;
+    --
+    OPEN l_cur_header_logo;
+    FETCH l_cur_header_logo
+      INTO l_rec_header_logo;
+    CLOSE l_cur_header_logo;
+    --
+    OPEN l_cur_about_logo;
+    FETCH l_cur_about_logo
+      INTO l_rec_about_logo;
+    CLOSE l_cur_about_logo;
+    --
+    IF dbms_lob.getlength(lob_loc => l_rec_header_logo.blob_content) > 0 THEN
+      l_header_logo_data_url := 'data:' || l_rec_header_logo.mime_type ||
+                                ';base64,' ||
+                                apex_web_service.blob2clobbase64(p_blob => l_rec_header_logo.blob_content);
+    END IF;
+    IF dbms_lob.getlength(lob_loc => l_rec_about_logo.blob_content) > 0 THEN
+      l_about_logo_data_url := 'data:' || l_rec_about_logo.mime_type ||
+                               ';base64,' ||
+                               apex_web_service.blob2clobbase64(p_blob => l_rec_about_logo.blob_content);
+    END IF;
     --
     apex_json.open_object;
     apex_json.write('fileType',
@@ -145,6 +194,27 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
                     apex_escape.json(p_editor_width));
     apex_json.write('height',
                     apex_escape.json(p_editor_height));
+    apex_json.write('folderName',
+                    apex_escape.json(p_folder_name));
+    --
+    apex_json.write('headerLink',
+                    p_header_link);
+    apex_json.write('headerLogo',
+                    l_header_logo_data_url);
+    --
+    apex_json.write('aboutName',
+                    apex_escape.json(p_about_name));
+    apex_json.write('aboutMail',
+                    apex_escape.json(p_about_mail));
+    apex_json.write('aboutUrl',
+                    p_about_url);
+    apex_json.write('aboutAddress',
+                    apex_escape.json(p_about_address));
+    apex_json.write('aboutInfo',
+                    apex_escape.json(p_about_info));
+    apex_json.write('aboutLogo',
+                    l_about_logo_data_url);
+    --
     apex_json.close_object;
     --
   END get_editor_config_json;
@@ -160,17 +230,20 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
     --
     l_blob      BLOB;
     l_file_name VARCHAR2(400);
+    l_mime_type VARCHAR2(500);
     --
   BEGIN
     --
     SELECT files.filename,
+           files.mime_type,
            files.file_content
       INTO l_file_name,
+           l_mime_type,
            l_blob
       FROM files
      WHERE files.id = p_id;
     --
-    owa_util.mime_header('application/json',
+    owa_util.mime_header(l_mime_type,
                          FALSE);
     htp.p('Content-length: ' || dbms_lob.getlength(l_blob));
     htp.p('Content-Disposition: ' || p_content_disposition ||
@@ -181,12 +254,111 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
   END download_file;
   --
   /*************************************************************************
-  * Purpose:  Check if access for particular IP is allowed
+  * Purpose:  Download converted PDF file from "files" table
+  * Author:   Daniel Hochleitner
+  * Created:  09.11.2017
+  * Changed:
+  *************************************************************************/
+  PROCEDURE download_file_pdf(p_id                  IN files.id%TYPE,
+                              p_content_disposition IN VARCHAR2 := 'attachment',
+                              p_file_url            IN VARCHAR2) IS
+    --
+    l_blob          BLOB;
+    l_file_name     VARCHAR2(400);
+    l_file_ending   VARCHAR2(400);
+    l_new_file_name VARCHAR2(400);
+    --
+  BEGIN
+    --
+    SELECT files.filename,
+           substr(files.filename,
+                  instr(files.filename,
+                        '.',
+                        -1) + 1,
+                  length(files.filename)) AS file_ending
+      INTO l_file_name,
+           l_file_ending
+      FROM files
+     WHERE files.id = p_id;
+    --
+    l_new_file_name := REPLACE(l_file_name,
+                               l_file_ending,
+                               'pdf');
+    l_blob          := onlyoffice_pkg.convert_file(p_file_url        => p_file_url,
+                                                   p_file_type       => l_file_ending,
+                                                   p_output_type     => 'pdf',
+                                                   p_output_filename => l_new_file_name,
+                                                   p_thumbnail       => NULL);
+    --
+    owa_util.mime_header('application/pdf',
+                         FALSE);
+    htp.p('Content-length: ' || dbms_lob.getlength(l_blob));
+    htp.p('Content-Disposition: ' || p_content_disposition ||
+          '; filename="' || l_new_file_name || '"');
+    owa_util.http_header_close;
+    wpg_docload.download_file(l_blob);
+    --
+  END download_file_pdf;
+  --
+  /*************************************************************************
+  * Purpose:  Download converted thumbnail image of file from "files" table
+  * Author:   Daniel Hochleitner
+  * Created:  09.11.2017
+  * Changed:
+  *************************************************************************/
+  PROCEDURE download_file_thumbnail(p_id                  IN files.id%TYPE,
+                                    p_content_disposition IN VARCHAR2 := 'attachment',
+                                    p_file_url            IN VARCHAR2,
+                                    p_thumbnail_aspect    IN NUMBER := 0,
+                                    p_thumbnail_width     IN NUMBER := 100,
+                                    p_thumbnail_height    IN NUMBER := 100) IS
+    --
+    l_blob          BLOB;
+    l_file_name     VARCHAR2(400);
+    l_file_ending   VARCHAR2(400);
+    l_new_file_name VARCHAR2(400);
+    --
+  BEGIN
+    --
+    SELECT files.filename,
+           substr(files.filename,
+                  instr(files.filename,
+                        '.',
+                        -1) + 1,
+                  length(files.filename)) AS file_ending
+      INTO l_file_name,
+           l_file_ending
+      FROM files
+     WHERE files.id = p_id;
+    --
+    l_new_file_name := REPLACE(l_file_name,
+                               l_file_ending,
+                               'png');
+    l_blob          := onlyoffice_pkg.convert_file(p_file_url        => p_file_url,
+                                                   p_file_type       => l_file_ending,
+                                                   p_output_type     => 'png',
+                                                   p_output_filename => l_new_file_name,
+                                                   p_thumbnail       => p_thumbnail_aspect || ':' ||
+                                                                        p_thumbnail_width || ':' ||
+                                                                        p_thumbnail_height);
+    --
+    owa_util.mime_header('image/png',
+                         FALSE);
+    htp.p('Content-length: ' || dbms_lob.getlength(l_blob));
+    htp.p('Content-Disposition: ' || p_content_disposition ||
+          '; filename="' || l_new_file_name || '"');
+    owa_util.http_header_close;
+    wpg_docload.download_file(l_blob);
+    --
+  END download_file_thumbnail;
+  --
+  /*************************************************************************
+  * Purpose:  Check if access for particular IP (onlyoffice_pkg.g_allowed_ip) is allowed
   * Author:   Daniel Hochleitner
   * Created:  19.10.2017
   * Changed:
   *************************************************************************/
-  FUNCTION is_access_allowed(p_allowed_ip IN VARCHAR2) RETURN BOOLEAN IS
+  FUNCTION is_access_allowed RETURN BOOLEAN IS
     --
     l_is_allowed     BOOLEAN := FALSE;
     l_remote_address VARCHAR2(200);
@@ -195,7 +367,7 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
     --
     l_remote_address := owa_util.get_cgi_env('REMOTE_ADDR');
     --
-    IF l_remote_address = p_allowed_ip THEN
+    IF l_remote_address = onlyoffice_pkg.g_allowed_ip THEN
       l_is_allowed := TRUE;
     ELSE
       l_is_allowed := FALSE;
@@ -211,11 +383,7 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
   * Created:  19.10.2017
   * Changed:
   *************************************************************************/
-  PROCEDURE onlyoffice_editor_callback(p_app_id      IN NUMBER,
-                                       p_app_session IN NUMBER,
-                                       p_body        BLOB,
-                                       p_wallet_path IN VARCHAR2,
-                                       p_wallet_pwd  IN VARCHAR2) IS
+  PROCEDURE onlyoffice_editor_callback(p_body BLOB) IS
     --
     l_blob          BLOB;
     l_clob          CLOB;
@@ -229,16 +397,13 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
     l_file_blob     BLOB;
     l_file_key      VARCHAR2(200);
     l_file_id       NUMBER;
+    l_file_key_arr2 apex_t_varchar2;
     --
   BEGIN
     -- check required parameter
-    IF p_app_id IS NOT NULL AND p_app_session IS NOT NULL AND
-       dbms_lob.getlength(p_body) > 0 THEN
-      -- join APEX session
-      onlyoffice_pkg.join_apex_session(p_session_id => p_app_session,
-                                       p_app_id     => p_app_id);
+    IF dbms_lob.getlength(p_body) > 0 THEN
       -- check if access allowed
-      IF onlyoffice_pkg.is_access_allowed(p_allowed_ip => apex_util.get_session_state('ALLOWED_IP')) THEN
+      IF onlyoffice_pkg.is_access_allowed THEN
         -- get HTTP Body
         l_blob := p_body;
         -- convert to CLOB
@@ -259,24 +424,28 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
                                                 p_path   => 'status');
         l_file_key      := apex_json.get_varchar2(p_values => l_values,
                                                   p_path   => 'key');
-        l_file_id       := to_number(substr(l_file_key,
-                                            instr(l_file_key,
-                                                  '-') + 1,
-                                            length(l_file_key)));
+        l_file_key_arr2 := apex_string.split(p_str => l_file_key,
+                                             p_sep => '-');
+        l_file_id       := to_number(l_file_key_arr2(2));
         -- Editor Status 2,6 --> successfully saved file
         IF l_editor_status = 6 AND l_file_id IS NOT NULL THEN
           -- grab finished file from file URL 
           l_file_url := apex_json.get_varchar2(p_values => l_values,
                                                p_path   => 'url');
-          l_file_url := REPLACE(l_file_url,
-                                apex_util.get_session_state('ONLYOFFICE_SERVER_BASE_URL'),
-                                'http://localhost:8181');
+          IF onlyoffice_pkg.g_override_server_base_url IS NOT NULL THEN
+            l_file_url := REPLACE(l_file_url,
+                                  onlyoffice_pkg.g_server_base_url,
+                                  onlyoffice_pkg.g_override_server_base_url);
+          END IF;
           --
           IF l_file_url IS NOT NULL THEN
+            apex_web_service.g_request_headers(1).name := 'User-Agent';
+            apex_web_service.g_request_headers(1).value := 'APEX Editor Callback';
+            --
             l_file_blob := apex_web_service.make_rest_request_b(p_url         => l_file_url,
                                                                 p_http_method => 'GET',
-                                                                p_wallet_path => p_wallet_path,
-                                                                p_wallet_pwd  => p_wallet_pwd);
+                                                                p_wallet_path => onlyoffice_pkg.g_ssl_wallet_path,
+                                                                p_wallet_pwd  => onlyoffice_pkg.g_ssl_wallet_pwd);
             -- update files table with new file
             IF dbms_lob.getlength(l_file_blob) > 0 THEN
               UPDATE files
@@ -317,134 +486,253 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
                       1);
       apex_json.close_object;
   END onlyoffice_editor_callback;
+  /****************************************************************************
+  * Purpose: Check Server response HTTP error (2XX Status codes)
+  * Author:  Daniel Hochleitner
+  * Created: 09.11.2017
+  * Changed:
+  ****************************************************************************/
+  PROCEDURE check_error_http_status IS
+    --
+    l_status_code VARCHAR2(100);
+    l_name        VARCHAR2(200);
+    l_value       VARCHAR2(200);
+    l_error_msg   CLOB;
+    --
+  BEGIN
+    --
+    -- get http headers from response
+    l_status_code := apex_web_service.g_status_code;
+    --
+    FOR i IN 1 .. apex_web_service.g_headers.count LOOP
+      l_name  := apex_web_service.g_headers(i).name;
+      l_value := apex_web_service.g_headers(i).value;
+      -- If not successful throw error
+      IF l_status_code NOT LIKE '2%' THEN
+        l_error_msg := 'Response HTTP Status NOT OK' || chr(10) || 'Name: ' ||
+                       l_name || chr(10) || 'Value: ' || l_value || chr(10) ||
+                       'Status Code: ' || l_status_code;
+        raise_application_error(error_http_status_code,
+                                l_error_msg);
+      END IF;
+    END LOOP;
+  END check_error_http_status;
+  --
+  /****************************************************************************
+  * Purpose: Check Conversion API Server response for error
+  * Author:  Daniel Hochleitner
+  * Created: 09.11.2017
+  * Changed:
+  ****************************************************************************/
+  PROCEDURE check_convert_error(p_response_clob IN OUT NOCOPY CLOB) IS
+    --
+    l_err_text     VARCHAR2(500);
+    l_error_msg    VARCHAR2(1000);
+    l_response_xml xmltype;
+    -- cursor xmltable auf json
+    CURSOR l_cur_error IS
+      SELECT err_code
+        FROM xmltable('/FileResult' passing l_response_xml columns err_code path
+                      'Error');
+    --
+    l_rec_error l_cur_error%ROWTYPE;
+    --
+  BEGIN
+    -- check response clob for error and code string
+    IF p_response_clob LIKE '%<Error>%' THEN
+      -- json to xml
+      l_response_xml := sys.xmltype.createxml(p_response_clob);
+      -- open xml cursor
+      OPEN l_cur_error;
+      FETCH l_cur_error
+        INTO l_rec_error;
+      CLOSE l_cur_error;
+      -- build error message (from ONLYOFFICE Docs: https://api.onlyoffice.com/editors/conversionapi)
+      IF l_rec_error.err_code = '-1' THEN
+        l_err_text := 'Unknown error';
+      ELSIF l_rec_error.err_code = '-2' THEN
+        l_err_text := 'Timeout conversion error';
+      ELSIF l_rec_error.err_code = '-3' THEN
+        l_err_text := 'Conversion error';
+      ELSIF l_rec_error.err_code = '-4' THEN
+        l_err_text := 'Error while downloading the document file to be converted';
+      ELSIF l_rec_error.err_code = '-6' THEN
+        l_err_text := 'Error while accessing the conversion result database';
+      ELSIF l_rec_error.err_code = '-8' THEN
+        l_err_text := 'Invalid token';
+        -- Unknown error
+      ELSE
+        l_err_text := 'Unknown Conversion API error';
+      END IF;
+      --
+      l_error_msg := 'Error-Code: ' || l_rec_error.err_code || chr(10) ||
+                     'Error-Description: ' || l_err_text;
+      -- Throw error
+      IF l_rec_error.err_code IS NOT NULL THEN
+        raise_application_error(error_onlyoffice_convert_api,
+                                l_error_msg);
+      END IF;
+    END IF;
+    --
+  END check_convert_error;
   --
   /*************************************************************************
-  * Purpose:  Creates a new APEX session 
-  *           https://github.com/OraOpenSource/oos-utils/blob/master/source/packages/oos_util_apex.pkb
+  * Purpose:  Converts a file to another file format, eg. docx --> pdf
+  *           https://api.onlyoffice.com/editors/conversionapi
   * Author:   Daniel Hochleitner
   * Created:  19.10.2017
   * Changed:
   *************************************************************************/
-  PROCEDURE create_apex_session(p_app_id     IN apex_applications.application_id%TYPE,
-                                p_user_name  IN apex_workspace_sessions.user_name%TYPE,
-                                p_page_id    IN apex_application_pages.page_id%TYPE DEFAULT NULL,
-                                p_session_id IN apex_workspace_sessions.apex_session_id%TYPE DEFAULT NULL) AS
-    l_workspace_id apex_applications.workspace_id%TYPE;
-    l_cgivar_name  sys.owa.vc_arr;
-    l_cgivar_val   sys.owa.vc_arr;
-  
-    l_page_id   apex_application_pages.page_id%TYPE := p_page_id;
-    l_home_link apex_applications.home_link%TYPE;
-    l_url_arr   apex_application_global.vc_arr2;
-  
-    l_count PLS_INTEGER;
+  FUNCTION convert_file(p_file_url        IN VARCHAR2,
+                        p_file_type       IN VARCHAR2,
+                        p_output_type     IN VARCHAR2,
+                        p_output_filename IN VARCHAR2 := NULL,
+                        p_thumbnail       IN VARCHAR2 := NULL) RETURN BLOB AS
+    --
+    l_request_json     CLOB;
+    l_response_xml     CLOB;
+    l_response_xmltype xmltype;
+    l_blob             BLOB;
+    l_thumbnail_arr2   apex_t_varchar2;
+    l_thumbnail_aspect NUMBER;
+    l_thumbnail_width  NUMBER;
+    l_thumbnail_height NUMBER;
+    l_server_url       VARCHAR2(1000);
+    l_file_url         VARCHAR2(1000);
+    -- cursor for convert response in xml
+    CURSOR l_cur_convert_response IS
+      SELECT file_url,
+             percentage,
+             end_convert
+        FROM xmltable('/FileResult' passing l_response_xmltype columns
+                      file_url path 'FileUrl',
+                      percentage path 'Percent',
+                      end_convert path 'EndConvert');
+    l_rec_convert_response l_cur_convert_response%ROWTYPE;
+    --
   BEGIN
-    -- create CGI ENV if not already present
-    IF owa_util.get_cgi_env('HTTP_HOST') IS NULL THEN
-      sys.htp.init;
-    
-      l_cgivar_name(1) := 'REQUEST_PROTOCOL';
-      l_cgivar_val(1) := 'HTTP';
-    
-      sys.owa.init_cgi_env(num_params => 1,
-                           param_name => l_cgivar_name,
-                           param_val  => l_cgivar_val);
+    --
+    -- build request JSON
+    apex_json.initialize_clob_output;
+    --
+    apex_json.open_object;
+    apex_json.write('async',
+                    FALSE);
+    apex_json.write('key',
+                    to_char(systimestamp,
+                            'YYYYMMDDHH24MISSFF'));
+    apex_json.write('url',
+                    '##FILE_URL##');
+    apex_json.write('filetype',
+                    p_file_type);
+    apex_json.write('outputtype',
+                    p_output_type);
+    IF p_output_filename IS NOT NULL THEN
+      apex_json.write('title',
+                      p_output_filename);
+    END IF;
+    -- thumbnail
+    IF p_thumbnail IS NOT NULL THEN
+      l_thumbnail_arr2   := apex_string.split(p_str => p_thumbnail,
+                                              p_sep => ':');
+      l_thumbnail_aspect := to_number(l_thumbnail_arr2(1));
+      l_thumbnail_width  := to_number(l_thumbnail_arr2(2));
+      l_thumbnail_height := to_number(l_thumbnail_arr2(3));
+      --
+      apex_json.open_object('thumbnail');
+      apex_json.write('aspect',
+                      l_thumbnail_aspect);
+      apex_json.write('first',
+                      TRUE);
+      apex_json.write('width',
+                      l_thumbnail_width);
+      apex_json.write('height',
+                      l_thumbnail_height);
+      apex_json.close_object;
     END IF;
     --
-    SELECT workspace_id
-      INTO l_workspace_id
-      FROM apex_applications
-     WHERE application_id = p_app_id;
-  
-    wwv_flow_api.set_security_group_id(l_workspace_id);
-  
-    IF l_page_id IS NULL THEN
-      -- Try to get the page_id from home link
-      SELECT aa.home_link
-        INTO l_home_link
-        FROM apex_applications aa
-       WHERE 1 = 1
-         AND aa.application_id = p_app_id;
-    
-      IF l_home_link IS NOT NULL THEN
-        l_url_arr := apex_util.string_to_table(l_home_link,
-                                               ':');
-      
-        IF l_url_arr.count >= 2 THEN
-          l_page_id := l_url_arr(2);
-        END IF;
+    apex_json.close_object;
+    --
+    l_request_json := apex_json.get_clob_output;
+    apex_json.free_output;
+    --
+    l_request_json := REPLACE(l_request_json,
+                              '##FILE_URL##',
+                              p_file_url);
+    --
+    -- REST call: start conversion task
+    apex_web_service.g_request_headers(1).name := 'User-Agent';
+    apex_web_service.g_request_headers(1).value := 'APEX Convert File';
+    apex_web_service.g_request_headers(2).name := 'Accept';
+    apex_web_service.g_request_headers(2).value := '*/*';
+    apex_web_service.g_request_headers(3).name := 'Content-Type';
+    apex_web_service.g_request_headers(3).value := 'application/json';
+    --
+    l_server_url := nvl(onlyoffice_pkg.g_override_server_base_url,
+                        onlyoffice_pkg.g_server_base_url) ||
+                    '/ConvertService.ashx';
+    --
+    l_response_xml := apex_web_service.make_rest_request(p_url         => l_server_url,
+                                                         p_http_method => 'POST',
+                                                         p_body        => l_request_json,
+                                                         p_wallet_path => onlyoffice_pkg.g_ssl_wallet_path,
+                                                         p_wallet_pwd  => onlyoffice_pkg.g_ssl_wallet_pwd);
+    -- check for http error
+    check_error_http_status;
+    -- check for convert error
+    check_convert_error(p_response_clob => l_response_xml);
+    --
+    l_response_xmltype := sys.xmltype.createxml(l_response_xml);
+    --
+    OPEN l_cur_convert_response;
+    FETCH l_cur_convert_response
+      INTO l_rec_convert_response;
+    CLOSE l_cur_convert_response;
+    --
+    IF l_rec_convert_response.percentage = 100 AND
+       l_rec_convert_response.end_convert = 'True' THEN
+      --
+      l_file_url := l_rec_convert_response.file_url;
+      IF onlyoffice_pkg.g_override_server_base_url IS NOT NULL THEN
+        l_file_url := REPLACE(l_file_url,
+                              onlyoffice_pkg.g_server_base_url,
+                              onlyoffice_pkg.g_override_server_base_url);
       END IF;
-    
-      IF l_page_id IS NULL THEN
-        l_page_id := 101;
-      END IF;
-    
-    END IF; -- l_page_id is null
-  
-    -- #49 Ensure that page exists
-    SELECT COUNT(1)
-      INTO l_count
-      FROM apex_application_pages aap
-     WHERE 1 = 1
-       AND aap.application_id = p_app_id
-       AND aap.page_id = l_page_id
-       AND l_page_id IS NOT NULL;
-  
-    apex_application.g_instance     := 1;
-    apex_application.g_flow_id      := p_app_id;
-    apex_application.g_flow_step_id := l_page_id;
-  
-    apex_custom_auth.post_login(p_uname      => p_user_name,
-                                p_session_id => NULL, -- could use APEX_CUSTOM_AUTH.GET_NEXT_SESSION_ID
-                                p_app_page   => apex_application.g_flow_id || ':' ||
-                                                l_page_id);
-  
-    -- Rejoin session
-    IF p_session_id IS NOT NULL THEN
-      -- This will only set the session but doesn't register the items
-      -- apex_custom_auth.set_session_id(p_session_id => p_session_id);
-      -- #42 Seems a second login is required to fully join session
-      apex_custom_auth.post_login(p_uname      => p_user_name,
-                                  p_session_id => p_session_id);
+      --
+      l_blob := apex_web_service.make_rest_request_b(p_url         => l_file_url,
+                                                     p_http_method => 'GET',
+                                                     p_wallet_path => onlyoffice_pkg.g_ssl_wallet_path,
+                                                     p_wallet_pwd  => onlyoffice_pkg.g_ssl_wallet_pwd);
+      -- check for http error
+      check_error_http_status;
     END IF;
-  
-  END create_apex_session;
+    --
+    RETURN l_blob;
+    --
+  END convert_file;
   --
-  /*************************************************************************
-  * Purpose:  Joins an existing APEX session
-  *           https://github.com/OraOpenSource/oos-utils/blob/master/source/packages/oos_util_apex.pkb
-  * Author:   Daniel Hochleitner
-  * Created:  19.10.2017
+  --
+  /****************************************************************************
+  * Purpose: Set all global package variables
+  * Author:  Daniel Hochleitner
+  * Created: 09.11.2017
   * Changed:
-  *************************************************************************/
-  PROCEDURE join_apex_session(p_session_id IN apex_workspace_sessions.apex_session_id%TYPE,
-                              p_app_id     IN apex_applications.application_id%TYPE DEFAULT NULL) AS
-    --
-    l_app_id    apex_applications.application_id%TYPE := p_app_id;
-    l_user_name apex_workspace_sessions.user_name%TYPE;
+  ****************************************************************************/
+  PROCEDURE set_global_pkg_vars(p_server_base_url          IN VARCHAR2,
+                                p_override_server_base_url IN VARCHAR2 := NULL,
+                                p_allowed_ip               IN VARCHAR2,
+                                p_ssl_wallet_path          IN VARCHAR2 := NULL,
+                                p_ssl_wallet_pwd           IN VARCHAR2 := NULL) IS
     --
   BEGIN
+    -- set global package vars
+    onlyoffice_pkg.g_server_base_url          := p_server_base_url;
+    onlyoffice_pkg.g_override_server_base_url := p_override_server_base_url;
+    onlyoffice_pkg.g_allowed_ip               := p_allowed_ip;
+    onlyoffice_pkg.g_ssl_wallet_path          := p_ssl_wallet_path;
+    onlyoffice_pkg.g_ssl_wallet_pwd           := p_ssl_wallet_pwd;
     --
-    IF l_app_id IS NULL THEN
-      SELECT MAX(application_id)
-        INTO l_app_id
-        FROM (SELECT application_id,
-                     row_number() over(ORDER BY view_date DESC) rn
-                FROM apex_workspace_activity_log
-               WHERE apex_session_id = p_session_id)
-       WHERE rn = 1;
-    END IF;
-    --
-    SELECT user_name
-      INTO l_user_name
-      FROM apex_workspace_sessions
-     WHERE apex_session_id = p_session_id;
-    --
-    onlyoffice_pkg.create_apex_session(p_app_id     => l_app_id,
-                                       p_user_name  => l_user_name,
-                                       p_session_id => p_session_id);
-    --
-  END join_apex_session;
+  END set_global_pkg_vars;
   --
 END onlyoffice_pkg;
 /
