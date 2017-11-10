@@ -301,6 +301,57 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
   END download_file_pdf;
   --
   /*************************************************************************
+  * Purpose:  Download converted file from "files" table with specified output type
+  * Author:   Daniel Hochleitner
+  * Created:  10.11.2017
+  * Changed:
+  *************************************************************************/
+  PROCEDURE download_converted_file(p_id                  IN files.id%TYPE,
+                                    p_content_disposition IN VARCHAR2 := 'attachment',
+                                    p_file_url            IN VARCHAR2,
+                                    p_output_type         IN VARCHAR2,
+                                    p_thumbnail           IN VARCHAR2 := NULL) IS
+    --
+    l_blob          BLOB;
+    l_file_name     VARCHAR2(400);
+    l_file_ending   VARCHAR2(400);
+    l_new_file_name VARCHAR2(400);
+    l_mime_type     VARCHAR2(500);
+    --
+  BEGIN
+    --
+    SELECT files.filename,
+           substr(files.filename,
+                  instr(files.filename,
+                        '.',
+                        -1) + 1,
+                  length(files.filename)) AS file_ending
+      INTO l_file_name,
+           l_file_ending
+      FROM files
+     WHERE files.id = p_id;
+    --
+    l_mime_type     := onlyoffice_pkg.get_mime_type(p_file_extension => p_output_type);
+    l_new_file_name := REPLACE(l_file_name,
+                               l_file_ending,
+                               p_output_type);
+    l_blob          := onlyoffice_pkg.convert_file(p_file_url        => p_file_url,
+                                                   p_file_type       => l_file_ending,
+                                                   p_output_type     => p_output_type,
+                                                   p_output_filename => l_new_file_name,
+                                                   p_thumbnail       => p_thumbnail);
+    --
+    owa_util.mime_header(l_mime_type,
+                         FALSE);
+    htp.p('Content-length: ' || dbms_lob.getlength(l_blob));
+    htp.p('Content-Disposition: ' || p_content_disposition ||
+          '; filename="' || l_new_file_name || '"');
+    owa_util.http_header_close;
+    wpg_docload.download_file(l_blob);
+    --
+  END download_converted_file;
+  --
+  /*************************************************************************
   * Purpose:  Download converted thumbnail image of file from "files" table
   * Author:   Daniel Hochleitner
   * Created:  09.11.2017
@@ -711,6 +762,129 @@ CREATE OR REPLACE PACKAGE BODY onlyoffice_pkg IS
     --
   END convert_file;
   --
+  /****************************************************************************
+  * Purpose: Get mime type depending on file extension
+  * Author:  Daniel Hochleitner
+  * Created: 10.11.2017
+  * Changed:
+  ****************************************************************************/
+  FUNCTION get_mime_type(p_file_extension IN VARCHAR2) RETURN VARCHAR2 IS
+    -- 
+    l_mime_type      VARCHAR2(500);
+    l_file_extension VARCHAR2(100);
+  BEGIN
+    l_mime_type := NULL;
+    --
+    l_file_extension := upper(p_file_extension);
+    --
+    CASE l_file_extension
+      WHEN 'PDF' THEN
+        l_mime_type := 'application/pdf';
+      WHEN 'TXT' THEN
+        l_mime_type := 'text/plain';
+      WHEN 'XLS' THEN
+        l_mime_type := 'application/vnd.ms-excel';
+      WHEN 'XLSX' THEN
+        l_mime_type := 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      WHEN 'XLT' THEN
+        l_mime_type := 'application/vnd.ms-excel';
+      WHEN 'XLTX' THEN
+        l_mime_type := 'application/vnd.openxmlformats-officedocument.spreadsheetml.template';
+      WHEN 'DOC' THEN
+        l_mime_type := 'application/msword';
+      WHEN 'DOCX' THEN
+        l_mime_type := 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      WHEN 'DOT' THEN
+        l_mime_type := 'application/msword';
+      WHEN 'DOTX' THEN
+        l_mime_type := 'application/vnd.openxmlformats-officedocument.wordprocessingml.template';
+      WHEN 'PPT' THEN
+        l_mime_type := 'application/vnd.ms-powerpoint';
+      WHEN 'PPTX' THEN
+        l_mime_type := 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      WHEN 'MPP' THEN
+        l_mime_type := 'application/vnd.ms-project';
+      WHEN 'WPS' THEN
+        l_mime_type := 'application/vnd.ms-works';
+      WHEN 'RTF' THEN
+        l_mime_type := 'application/rtf';
+      WHEN 'ODT' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.text';
+      WHEN 'OTT' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.text-template';
+      WHEN 'OTH' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.text-web';
+      WHEN 'ODM' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.text-master';
+      WHEN 'ODG' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.graphics';
+      WHEN 'OTG' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.graphics-template';
+      WHEN 'ODP' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.presentation';
+      WHEN 'OTP' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.presentation-template';
+      WHEN 'ODS' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.spreadsheet';
+      WHEN 'OTS' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.spreadsheet-template';
+      WHEN 'ODC' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.chart';
+      WHEN 'ODF' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.formula';
+      WHEN 'ODB' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.database';
+      WHEN 'ODI' THEN
+        l_mime_type := 'application/vnd.oasis.opendocument.image';
+      WHEN 'OXT' THEN
+        l_mime_type := 'application/vnd.openofficeorg.extension';
+      WHEN 'LATEX' THEN
+        l_mime_type := 'application/x-latex';
+      WHEN 'SWF' THEN
+        l_mime_type := 'application/x-shockwave-flash';
+      WHEN 'TEX' THEN
+        l_mime_type := 'application/x-tex';
+      WHEN 'ZIP' THEN
+        l_mime_type := 'application/zip';
+      WHEN 'MP3' THEN
+        l_mime_type := 'audio/mpeg';
+      WHEN 'BMP' THEN
+        l_mime_type := 'image/bmp';
+      WHEN 'PNG' THEN
+        l_mime_type := 'image/png';
+      WHEN 'GIF' THEN
+        l_mime_type := 'image/gif';
+      WHEN 'JPG' THEN
+        l_mime_type := 'image/jpeg';
+      WHEN 'JPEG' THEN
+        l_mime_type := 'image/jpeg';
+      WHEN 'TIF' THEN
+        l_mime_type := 'image/tiff';
+      WHEN 'TIFF' THEN
+        l_mime_type := 'image/tiff';
+      WHEN 'ICO' THEN
+        l_mime_type := 'image/x-icon';
+      WHEN 'CSS' THEN
+        l_mime_type := 'text/css';
+      WHEN 'HTML' THEN
+        l_mime_type := 'text/html';
+      WHEN 'HTM' THEN
+        l_mime_type := 'text/html';
+      WHEN 'TXT' THEN
+        l_mime_type := 'text/plain';
+      WHEN 'MPG' THEN
+        l_mime_type := 'video/mpeg';
+      WHEN 'MOV' THEN
+        l_mime_type := 'video/quicktime';
+      WHEN 'EML' THEN
+        l_mime_type := 'message/rfc822';
+      ELSE
+        l_mime_type := 'application/octet-stream';
+    END CASE;
+    --
+    RETURN l_mime_type;
+    --
+  END get_mime_type;
   --
   /****************************************************************************
   * Purpose: Set all global package variables

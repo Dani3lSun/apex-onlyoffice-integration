@@ -65,6 +65,18 @@ CREATE OR REPLACE PACKAGE onlyoffice_pkg IS
                               p_content_disposition IN VARCHAR2 := 'attachment',
                               p_file_url            IN VARCHAR2);
   --
+  -- Download converted file from "files" table with specified output type
+  -- #param p_id
+  -- #param p_content_disposition
+  -- #param p_file_url
+  -- #param p_output_type
+  -- #param p_thumbnail aspect:width:height, e.g 0:100:100
+  PROCEDURE download_converted_file(p_id                  IN files.id%TYPE,
+                                    p_content_disposition IN VARCHAR2 := 'attachment',
+                                    p_file_url            IN VARCHAR2,
+                                    p_output_type         IN VARCHAR2,
+                                    p_thumbnail           IN VARCHAR2 := NULL);
+  --
   -- Download converted thumbnail image of file from "files" table
   -- #param p_id
   -- #param p_content_disposition
@@ -91,13 +103,18 @@ CREATE OR REPLACE PACKAGE onlyoffice_pkg IS
   -- #param p_file_url
   -- #param p_output_type
   -- #param p_output_filename
-  -- p_thumbnail aspect:width:height, e.g 0:100:100
+  -- #param p_thumbnail aspect:width:height, e.g 0:100:100
   -- #return BLOB
   FUNCTION convert_file(p_file_url        IN VARCHAR2,
                         p_file_type       IN VARCHAR2,
                         p_output_type     IN VARCHAR2,
                         p_output_filename IN VARCHAR2 := NULL,
                         p_thumbnail       IN VARCHAR2 := NULL) RETURN BLOB;
+  --
+  -- Get mime type depending on file extension
+  -- #param p_file_extension
+  -- #return VARCHAR2
+  FUNCTION get_mime_type(p_file_extension IN VARCHAR2) RETURN VARCHAR2;
   --
   -- Set all global package variables
   -- #param p_server_base_url
